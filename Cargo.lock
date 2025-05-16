@@ -1109,6 +1109,7 @@ dependencies = [
  "clap",
  "docker_credential",
  "oci-client",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

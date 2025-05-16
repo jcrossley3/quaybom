@@ -1,4 +1,4 @@
-use oci_client::{secrets::RegistryAuth, Client, Reference};
+use oci_client::{errors::Result, secrets::RegistryAuth, Client, Reference};
 
 use clap::Parser;
 use docker_credential::{CredentialRetrievalError, DockerCredential};
@@ -70,9 +70,8 @@ fn build_client_config(cli: &Cli) -> oci_client::client::ClientConfig {
 }
 
 #[tokio::main]
-pub async fn main() {
+pub async fn main() -> Result<()> {
     let cli = Cli::parse();
-
     // setup logging
     let level_filter = if cli.verbose { "debug" } else { "info" };
     let filter_layer = EnvFilter::new(level_filter);
@@ -87,16 +86,34 @@ pub async fn main() {
     let client_config = build_client_config(&cli);
     let client = Client::new(client_config);
 
-    let (manifest, _) = client
-        .pull_manifest(&reference, &auth)
-        .await
-        .expect("Cannot pull manifest");
+    let (manifest, digest) = client.pull_manifest(&reference, &auth).await?;
+    print(cli.json, &manifest);
+    println!("digest: {digest}");
 
-    if cli.json {
-        serde_json::to_writer_pretty(std::io::stdout(), &manifest)
-            .expect("Cannot serialize manifest to JSON");
+    // Attempt to pull SBOM attachment
+    if let Some((algo, digest)) = digest.split_once(':') {
+        let sbom_tag = format!("{algo}-{digest}.sbom");
+        let reference = Reference::with_tag(
+            reference.registry().into(),
+            reference.repository().into(),
+            sbom_tag,
+        );
+        let (manifest, _) = client.pull_image_manifest(&reference, &auth).await?;
+        print(cli.json, &manifest);
+
+        client
+            .pull_blob(&reference, &manifest.layers[0], tokio::io::stdout())
+            .await?;
+    }
+
+    Ok(())
+}
+
+fn print<T: serde::ser::Serialize + std::fmt::Display>(pretty: bool, json: &T) {
+    if pretty {
+        serde_json::to_writer_pretty(std::io::stdout(), json).unwrap();
         println!();
     } else {
-        println!("{}", manifest);
+        println!("{}", json);
     }
 }
